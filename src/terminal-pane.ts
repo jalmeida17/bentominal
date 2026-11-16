@@ -2,10 +2,12 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listShells, shellLabel } from "./shells";
+import { showMenu } from "./menu";
 
 export interface PaneOptions {
   id: string;
-  /** "powershell" (défaut), "pwsh", "cmd" ou "wsl:<distribution>". */
+  /** "pwsh", "powershell", "cmd" ou "wsl:<distribution>" ; défaut : premier shell disponible. */
   shell?: string;
   cwd?: string;
 }
@@ -34,7 +36,7 @@ const theme = {
 };
 
 /**
- * Un panneau : un terminal xterm.js relié à un shell côté Rust.
+ * Un panneau : une barre de titre et un terminal xterm.js relié à un shell côté Rust.
  *
  * L'élément `element` est créé une fois et peut être déplacé dans le DOM
  * (découpe, changement d'onglet) sans recréer le terminal ni le shell.
@@ -42,7 +44,11 @@ const theme = {
 export class TerminalPane {
   readonly id: string;
   readonly element: HTMLDivElement;
+  /** Boutons d'action de la barre de titre (découpe, fermeture). */
+  readonly actions: HTMLDivElement;
 
+  private readonly host: HTMLDivElement;
+  private readonly shellButton: HTMLButtonElement;
   private readonly term: Terminal;
   private readonly fit = new FitAddon();
   private readonly resizeObserver: ResizeObserver;
@@ -57,8 +63,29 @@ export class TerminalPane {
 
   constructor(private readonly opts: PaneOptions) {
     this.id = opts.id;
+
     this.element = document.createElement("div");
-    this.element.className = "pane-term";
+    this.element.className = "pane";
+
+    const header = document.createElement("div");
+    header.className = "pane-header";
+    this.shellButton = document.createElement("button");
+    this.shellButton.type = "button";
+    this.shellButton.className = "pane-shell";
+    this.shellButton.title = "Changer de shell";
+    this.shellButton.addEventListener("click", () => void this.openShellMenu());
+    const spacer = document.createElement("div");
+    spacer.className = "pane-spacer";
+    this.actions = document.createElement("div");
+    this.actions.className = "pane-actions";
+    header.append(this.shellButton, spacer, this.actions);
+
+    this.host = document.createElement("div");
+    this.host.className = "pane-term";
+    this.element.append(header, this.host);
+
+    this.element.addEventListener("focusin", () => this.element.classList.add("focused"));
+    this.element.addEventListener("focusout", () => this.element.classList.remove("focused"));
 
     this.term = new Terminal({
       fontFamily: '"Cascadia Mono", "Cascadia Code", Consolas, monospace',
@@ -77,12 +104,17 @@ export class TerminalPane {
       }
     });
     this.term.attachCustomKeyEventHandler((e) => this.onKey(e));
-    this.element.addEventListener("contextmenu", (e) => {
+    this.host.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       void this.copyOrPaste();
     });
 
     this.resizeObserver = new ResizeObserver(() => this.refit());
+    void this.updateHeader();
+  }
+
+  get shell(): string | undefined {
+    return this.opts.shell;
   }
 
   /** Place le panneau dans `container` ; au premier appel, ouvre le terminal et lance le shell. */
@@ -90,9 +122,9 @@ export class TerminalPane {
     container.appendChild(this.element);
     if (!this.opened) {
       this.opened = true;
-      this.term.open(this.element);
+      this.term.open(this.host);
       this.loadWebgl();
-      this.resizeObserver.observe(this.element);
+      this.resizeObserver.observe(this.host);
       this.refit();
       void this.start();
     } else {
@@ -102,6 +134,15 @@ export class TerminalPane {
 
   focus(): void {
     this.term.focus();
+  }
+
+  /** Relance le panneau avec un autre shell (l'ancien est arrêté). */
+  async setShell(shell: string): Promise<void> {
+    this.opts.shell = shell;
+    void this.updateHeader();
+    this.term.reset();
+    await this.start();
+    this.focus();
   }
 
   /** Envoie du texte au shell comme si on le tapait. */
@@ -130,6 +171,23 @@ export class TerminalPane {
     this.element.remove();
   }
 
+  private async updateHeader(): Promise<void> {
+    const label = await shellLabel(this.opts.shell);
+    this.shellButton.textContent = `${label} ▾`;
+  }
+
+  private async openShellMenu(): Promise<void> {
+    const shells = await listShells();
+    showMenu(
+      this.shellButton,
+      shells.map((s) => ({
+        label: s.label,
+        checked: s.id === this.opts.shell,
+        action: () => void this.setShell(s.id),
+      })),
+    );
+  }
+
   private loadWebgl(): void {
     try {
       const webgl = new WebglAddon();
@@ -142,7 +200,7 @@ export class TerminalPane {
 
   private refit(): void {
     // Panneau caché (onglet inactif) : rien à mesurer.
-    if (!this.opened || this.element.clientWidth === 0 || this.element.clientHeight === 0) return;
+    if (!this.opened || this.host.clientWidth === 0 || this.host.clientHeight === 0) return;
     this.fit.fit();
   }
 
@@ -150,6 +208,12 @@ export class TerminalPane {
     const launch = ++this.launch;
     this.state = "starting";
     this.pendingInput = "";
+
+    if (!this.opts.shell) {
+      this.opts.shell = (await listShells())[0]?.id;
+      void this.updateHeader();
+      if (launch !== this.launch) return;
+    }
 
     const onData = new Channel<ArrayBuffer>();
     onData.onmessage = (chunk) => {

@@ -1,4 +1,5 @@
 mod pty;
+mod shells;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -10,6 +11,7 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_kill,
             pty::pty_kill_all,
+            shells::list_shells,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
