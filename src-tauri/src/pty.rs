@@ -226,7 +226,11 @@ mod tests {
     /// Lance PowerShell dans une vraie pseudo-console et vérifie qu'il exécute
     /// une commande. ConPTY demande d'abord la position du curseur (ESC[6n) et
     /// attend la réponse, comme le ferait xterm.js.
+    // Ignoré par défaut : lancer un shell depuis un exe non signé peut alerter
+    // un EDR (SentinelOne sur le poste de développement). La CI le lance avec
+    // `cargo test -- --include-ignored`.
     #[test]
+    #[ignore]
     fn powershell_runs_in_a_pty() {
         let pair = native_pty_system().openpty(pty_size(120, 30)).unwrap();
         let mut child = pair
